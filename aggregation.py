@@ -24,36 +24,18 @@ def aggregate(
     hidden_states: torch.Tensor,
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Convert per-token hidden states into a single feature vector.
-
-    Args:
-        hidden_states:  Tensor of shape ``(n_layers, seq_len, hidden_dim)``.
-                        Layer index 0 is the token embedding; index -1 is the
-                        final transformer layer.
-        attention_mask: 1-D tensor of shape ``(seq_len,)`` with 1 for real
-                        tokens and 0 for padding.
-
-    Returns:
-        A 1-D feature tensor of shape ``(hidden_dim,)`` or
-        ``(k * hidden_dim,)`` if multiple layers are concatenated.
-
-    Student task:
-        Replace or extend the skeleton below with alternative layer selection,
-        token pooling (mean, max, weighted), or multi-layer fusion strategies.
-    """
-    # ------------------------------------------------------------------
-    # STUDENT: Replace or extend the aggregation below.
-    # ------------------------------------------------------------------
-
-    # Default: last real token of the final transformer layer.
-    layer = hidden_states[-1]          # (seq_len, hidden_dim)
-
-    # Find the index of the last real (non-padding) token.
-    real_positions = attention_mask.nonzero(as_tuple=False)  # (n_real, 1)
-    last_pos = int(real_positions[-1].item())                 # scalar index
-
-    feature = layer[last_pos]          # (hidden_dim,)
-
+    # Берём последний слой
+    last_layer = hidden_states[-1]  # (seq_len, hidden_dim)
+    
+    # Усредняем только по реальным токенам (где attention_mask == 1)
+    mask = attention_mask.bool()  # (seq_len,)
+    masked = last_layer[mask]      # (n_real_tokens, hidden_dim)
+    
+    if masked.shape[0] == 0:
+        # Если нет реальных токенов (не должно случиться), возвращаем нули
+        return torch.zeros(last_layer.shape[1])
+    
+    feature = masked.mean(dim=0)    # (hidden_dim,)
     return feature
     # ------------------------------------------------------------------
 
@@ -62,31 +44,16 @@ def extract_geometric_features(
     hidden_states: torch.Tensor,
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
-    """Extract hand-crafted geometric / statistical features from hidden states.
-
-    Called only when ``USE_GEOMETRIC = True`` in ``solution.ipynb``.  The
-    returned tensor is concatenated with the output of ``aggregate``.
-
-    Args:
-        hidden_states:  Tensor of shape ``(n_layers, seq_len, hidden_dim)``.
-        attention_mask: 1-D tensor of shape ``(seq_len,)`` with 1 for real
-                        tokens and 0 for padding.
-
-    Returns:
-        A 1-D float tensor of shape ``(n_geometric_features,)``.  The length
-        must be the same for every sample.
-
-    Student task:
-        Replace the stub below.  Possible features: layer-wise activation
-        norms, inter-layer cosine similarity (representation drift), or
-        sequence length.
-    """
-    # ------------------------------------------------------------------
-    # STUDENT: Replace or extend the geometric feature extraction below.
-    # ------------------------------------------------------------------
-
-    # Placeholder: returns an empty tensor (no geometric features).
-    return torch.zeros(0)
+    # Берём последний слой и последний токен
+    last_layer = hidden_states[-1]  # (seq_len, hidden_dim)
+    real_positions = attention_mask.nonzero(as_tuple=False)
+    last_pos = int(real_positions[-1].item())
+    last_token_emb = last_layer[last_pos]  # (hidden_dim,)
+    
+    # Вычисляем норму (L2) как один дополнительный признак
+    norm = torch.norm(last_token_emb, p=2).unsqueeze(0)  # (1,)
+    
+    return norm
 
 
 def aggregation_and_feature_extraction(
