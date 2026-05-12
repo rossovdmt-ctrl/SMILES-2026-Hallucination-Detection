@@ -18,95 +18,70 @@ from sklearn.preprocessing import StandardScaler
 
 
 class HallucinationProbe(nn.Module):
-    """Binary classifier that detects hallucinations from hidden-state features.
+    """Binary classifier for hallucination detection.
 
-    Extends ``torch.nn.Module``; the default architecture is a single
-    hidden-layer MLP with ``StandardScaler`` pre-processing.  The network is
-    built lazily in ``fit()`` once the feature dimension is known.
+    Args:
+        input_dim: Dimensionality of the input feature vector (from aggregation).
+        hidden_dim: Size of the hidden layer (if using MLP). Default 128.
+        dropout: Dropout probability. Default 0.1.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, input_dim: int, hidden_dim: int = 128, dropout: float = 0.1):
         super().__init__()
-        self._net: nn.Sequential | None = None  # built lazily in fit()
-        self._scaler = StandardScaler()
-        self._threshold: float = 0.5  # tuned by fit_hyperparameters()
 
-    # ------------------------------------------------------------------
-    # STUDENT: Replace or extend the network definition below.
-    # ------------------------------------------------------------------
-    def _build_network(self, input_dim: int) -> None:
-        """Instantiate the network layers.
-
-        Called once at the start of ``fit()`` when ``input_dim`` is known.
-
-        Args:
-            input_dim: Feature vector dimensionality.
-        """
-        self._net = nn.Sequential(
-            nn.Linear(input_dim, 256),
+        self.classifier = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
             nn.ReLU(),
-            nn.Linear(256, 1),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1),
+            nn.Sigmoid()  # выход — вероятность от 0 до 1
         )
+        self._threshold = 0.5
+        self._scaler = StandardScaler()
+        self._is_fitted = False
 
-    # ------------------------------------------------------------------
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass — returns raw logits of shape ``(n_samples,)``.
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        """Forward pass.
 
         Args:
-            x: Float tensor of shape ``(n_samples, feature_dim)``.
+            features: Feature tensor of shape ``(batch_size, input_dim)``.
 
         Returns:
-            1-D tensor of raw (pre-sigmoid) logits.
+            Probabilities of shape ``(batch_size, 1)`` in [0, 1].
         """
-        if self._net is None:
-            raise RuntimeError(
-                "Network has not been built yet. Call fit() before forward()."
-            )
-        return self._net(x).squeeze(-1)
+        return self.classifier(features)
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> "HallucinationProbe":
-        """Train the probe on labelled feature vectors.
-
-        Scales features with ``StandardScaler``, builds the network if needed,
-        and optimises with Adam + ``BCEWithLogitsLoss``.
+        """Train the probe classifier on features X and labels y.
 
         Args:
-            X: Feature matrix of shape ``(n_samples, feature_dim)``.
-            y: Integer label vector of shape ``(n_samples,)``; 0 = truthful,
-               1 = hallucinated.
+            X: Feature matrix of shape (n_samples, feature_dim)
+            y: Labels of shape (n_samples,)
 
         Returns:
-            ``self`` (for method chaining).
+            self for method chaining
         """
-        X_scaled = self._scaler.fit_transform(X)
+        # Обучаем scaler
+        self._scaler.fit(X)
+        X_scaled = self._scaler.transform(X)
 
-        self._build_network(X_scaled.shape[1])
-
+        # Конвертируем в тензоры
         X_t = torch.from_numpy(X_scaled).float()
-        y_t = torch.from_numpy(y.astype(np.float32))
+        y_t = torch.from_numpy(y).float().view(-1, 1)
 
-        # Weight positive examples by neg/pos ratio to handle class imbalance.
-        n_pos = int(y.sum())
-        n_neg = len(y) - n_pos
-        pos_weight = torch.tensor([n_neg / max(n_pos, 1)], dtype=torch.float32)
-        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-
-        # ------------------------------------------------------------------
-        # STUDENT: Replace or extend the training loop below.
-        # ------------------------------------------------------------------
-        optimizer = torch.optim.Adam(self.parameters(), lr=1e-3)
+        # Настройки обучения
+        optimizer = torch.optim.Adam(self.parameters(), lr=0.001)
+        criterion = nn.BCELoss()
 
         self.train()
-        for _ in range(200):
+        for epoch in range(50):  # 50 эпох
             optimizer.zero_grad()
-            logits = self(X_t)
-            loss = criterion(logits, y_t)
+            outputs = self(X_t)
+            loss = criterion(outputs, y_t)
             loss.backward()
             optimizer.step()
-        # ------------------------------------------------------------------
 
-        self.eval()
+        self._is_fitted = True
         return self
 
     def fit_hyperparameters(
@@ -171,8 +146,7 @@ class HallucinationProbe(nn.Module):
         """
         X_scaled = self._scaler.transform(X)
         X_t = torch.from_numpy(X_scaled).float()
+        self.eval()
         with torch.no_grad():
-            logits = self(X_t)
-            prob_pos = torch.sigmoid(logits).numpy()
+            prob_pos = self(X_t).numpy().flatten()
         return np.stack([1.0 - prob_pos, prob_pos], axis=1)
-
